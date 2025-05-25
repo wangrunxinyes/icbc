@@ -16,7 +16,7 @@ import {
 } from "../config.js";
 import { sleep, getDateFromText } from "../helpers.js";
 import approvementLogic from "../approvementLogic.js";
-import { getVerificationCode } from "./emailVerification.js";
+import { getVerificationCode, getVerificationCodeByUrl } from "./emailVerification.js";
 
 // Helper function to log messages with timestamps
 const logWithTimestamp = (...messages) => {
@@ -31,6 +31,8 @@ class WebDriverHelper {
   static attempt = 1;
   lastDateText = null;
   initialized = false;
+  selectDate = null;
+  verificationCode = null;
 
   async initialize() {
     if (this.browser) {
@@ -38,7 +40,8 @@ class WebDriverHelper {
     }
 
     this.browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
     this.page = await this.browser.newPage();
     this.page.setViewport({ width: 1280, height: 720 });
@@ -297,13 +300,9 @@ class WebDriverHelper {
     }
   }
 
-  async finishTheVerificationProcessAndGetTheAppointment(isAppointmentFoundResult) {
+  async finishTheVerificationProcessAndGetTheAppointment(buttonScheduleHour) {
     notifier.notify("DATE FOUND ✅");
 
-    const [buttonScheduleHour] = await this.page.$x(
-      "//div[@class='appointment-listings']//child::mat-button-toggle[1]",
-    );
-    if (!buttonScheduleHour) throw new Error("Schedule hour button not found.");
     await buttonScheduleHour.click();
     await sleep(2000);
 
@@ -337,7 +336,7 @@ class WebDriverHelper {
     for (let i = 1; i <= totalAttempts; i += 1) {
       try {
         logWithTimestamp(`Fetching verification code from inbox (Attempt ${i}/${totalAttempts})...`);
-        const resultOfAttempt = await getVerificationCode();
+        const resultOfAttempt = await getVerificationCodeByUrl(this);
         if (resultOfAttempt !== "No Email") {
           verificationCode = resultOfAttempt;
           logWithTimestamp(`✅ Verification code:`, verificationCode);
@@ -387,10 +386,10 @@ class WebDriverHelper {
     await buttonSubmitCodeAndBookAppointment.click();
 
     logWithTimestamp(
-      `Congrats! Your appointment is now booked on: ${isAppointmentFoundResult.getDate()}/${
-        isAppointmentFoundResult.getMonth() + 1
-      }/${isAppointmentFoundResult.getFullYear()}  ... ENJOY!`,
+      `Congrats! Your appointment is now booked... ENJOY!`,
     );
+
+    process.exit(0);
   }
 
   async promptMeAndWaitForMyRestartCall() {
@@ -422,7 +421,61 @@ class WebDriverHelper {
   async isAppointmentFound(buttonFoundLocation) {
     await buttonFoundLocation.click();
 
-    await sleep(2000);
+   let dateText = await this.tryFindingAppointmentTime();
+   if(dateText == "No appointments available"){
+    return false;
+   }
+   let schedules = await this.getAvailableSchedules();
+
+    if (this.lastDateText === schedules) {
+      process.stdout.write("\r\x1b[K");
+      process.stdout.write(`[${new Date().toISOString()}] Attempt #${WebDriverHelper.attempt++}: ${dateText}`);
+    } else {
+      process.stdout.write(`${EOL}[${new Date().toISOString()}] Attempt #${WebDriverHelper.attempt++}: ${dateText}`);
+    }
+    this.lastDateText = schedules;
+
+    // const date = getDateFromText(dateText);
+
+    // const isApproved = approvementLogic(date, dateText);
+    // if (isApproved) {
+    //   logWithTimestamp(`Appointment Found!!! ----- ${dateText} -----`);
+    //   return date;
+    // 
+
+console.log(schedules); // [{ date: "...", time: "...", buttonId: "mat-button-toggle-5" }, ...]
+const allowedDates = ["June 7th", "June 8th", "June 9th", "June 10th", "June 11nd"];
+const allowedTimes = this.generateTimesBetween("8:30 AM", "9:10 AM");
+const desired = schedules.filter(s =>
+  allowedDates.some(date => s.date.includes(date)) &&
+  allowedTimes.includes(s.time)
+);
+
+if (desired) {
+  const button = await this.page.$(`#${desired.buttonId} button`);
+this.selectDate = `${desired.date} ${desired.time}`;
+  if (button) {
+    await button.click();
+    return button;
+  }
+} else {
+  console.log("未找到符合条件的预约");
+}
+
+    return false;
+  }
+
+  async tryFindingAppointmentTime() {
+     const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try{
+
+ const min = 3000;
+    const max = 5000;
+    const randomTime = Math.floor(Math.random() * (max - min + 1)) + min;
+
+    await sleep(randomTime);
 
     await this.checkForSoftBan();
 
@@ -430,28 +483,105 @@ class WebDriverHelper {
     let dateText = null;
     if (dateTitleElement) {
       dateText = await this.page.$eval(".date-title", (e) => e.innerText);
-    } else {
+      console.log(dateText);
+      return dateText;
+    } else{
+
+const noAppointments = await this.page.$x(
+  "//div[contains(@class, 'warning-message')]//span[contains(text(), 'No appointments available')]"
+);
+
+if (noAppointments.length > 0) {
+  console.log("❌ 页面提示：No appointments available");
+  return "No appointments available"; // 或者触发你想要的重试逻辑
+}else{
       throw new Error("Date title element not found.");
+}
+
+
     }
-
-    if (this.lastDateText === dateText) {
-      process.stdout.write("\r\x1b[K");
-      process.stdout.write(`[${new Date().toISOString()}] Attempt #${WebDriverHelper.attempt++}: ${dateText}`);
-    } else {
-      process.stdout.write(`${EOL}[${new Date().toISOString()}] Attempt #${WebDriverHelper.attempt++}: ${dateText}`);
+    
+    }catch (error) {
+      console.warn(`第 ${attempt} 次失败：${error.message}`);
+      if (attempt === maxAttempts) {
+        console.error("已达最大尝试次数，退出。");
+        throw error; // 最终失败，抛出错误
+      }
     }
-    this.lastDateText = dateText;
-
-    const date = getDateFromText(dateText);
-
-    const isApproved = approvementLogic(date, dateText);
-    if (isApproved) {
-      logWithTimestamp(`Appointment Found!!! ----- ${dateText} -----`);
-      return date;
-    }
-
-    return false;
   }
+
+}
+
+ generateTimesBetween(startTime, endTime, stepMinutes = 5) {
+  const times = [];
+
+  const [startHour, startMin, startPeriod] = parseTime(startTime);
+  const [endHour, endMin, endPeriod] = parseTime(endTime);
+
+  // Convert to minutes since midnight
+  const startTotal = toMinutes(startHour, startMin, startPeriod);
+  const endTotal = toMinutes(endHour, endMin, endPeriod);
+
+  for (let m = startTotal; m <= endTotal; m += stepMinutes) {
+    times.push(formatTime(m));
+  }
+
+  return times;
+
+  function parseTime(str) {
+    const [time, period] = str.split(" ");
+    const [hour, minute] = time.split(":").map(Number);
+    return [hour, minute, period];
+  }
+
+  function toMinutes(hour, minute, period) {
+    let h = hour % 12;
+    if (period === "PM") h += 12;
+    return h * 60 + minute;
+  }
+
+  function formatTime(totalMinutes) {
+    let hour = Math.floor(totalMinutes / 60);
+    const minute = totalMinutes % 60;
+    const period = hour >= 12 ? "PM" : "AM";
+
+    hour = hour % 12 || 12;
+    const minuteStr = minute.toString().padStart(2, "0");
+    return `${hour}:${minuteStr} ${period}`;
+  }
+}
+
+
+async getAvailableSchedules() {
+  return await this.page.evaluate(() => {
+    const result = [];
+
+    const container = document.querySelector(".appointment-listings");
+    if (!container) return result;
+
+    const dateSections = container.querySelectorAll(".date-title");
+
+    dateSections.forEach(dateEl => {
+      const dateText = dateEl.innerText.trim();
+
+      let sibling = dateEl.nextElementSibling;
+      while (sibling && sibling.tagName.toLowerCase() === "mat-button-toggle") {
+        const timeEl = sibling.querySelector(".mat-button-toggle-label-content");
+        if (timeEl) {
+          result.push({
+            date: dateText,
+            time: timeEl.innerText.trim(),
+            buttonId: sibling.id
+          });
+        }
+        sibling = sibling.nextElementSibling;
+      }
+    });
+
+    return result;
+  });
+}
+
 }
 
 export default WebDriverHelper;

@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+node_modules
+.vscode
+*.zip
+*.tar
+*.gz
+*.ps1

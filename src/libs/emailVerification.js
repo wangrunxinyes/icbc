@@ -12,6 +12,28 @@ const imapConfig = {
   tlsOptions: { rejectUnauthorized: false },
 };
 
+import { sleep } from "./../helpers.js"; // 你已有的 sleep 工具
+
+export const getVerificationCodeByUrl = async (webDriverHelper) => {
+  const timeoutMs = 300_000; // 最多等 60 秒
+  const intervalMs = 500;   // 每 500ms 检查一次
+
+  const start = Date.now();
+
+  while (true) {
+    if (webDriverHelper.verificationCode != null) {
+      return webDriverHelper.verificationCode;
+    }
+
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("Timed out waiting for verification code.");
+    }
+
+    await sleep(intervalMs);
+  }
+};
+
+
 export const getVerificationCode = () =>
   new Promise((resolve, reject) => {
     try {
